@@ -3,6 +3,7 @@ package org.embulk.input.kafka;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.embulk.input.kafka.KafkaInputPlugin.PluginTask;
 import org.embulk.spi.Column;
 import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.PageBuilder;
@@ -16,63 +17,108 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class JsonFormatColumnVisitor implements ColumnVisitor
+public class JsonFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<ObjectNode> implements ColumnVisitor
 {
-  private final PageBuilder pageBuilder;
-  private final TimestampParser[] timestampParsers;
-  private ObjectNode currentObjectNode;
-
-  public JsonFormatColumnVisitor(PageBuilder pageBuilder, TimestampParser[] timestampParsers)
+  public JsonFormatColumnVisitor(PluginTask task, PageBuilder pageBuilder, TimestampParser[] timestampParsers)
   {
-    this.pageBuilder = pageBuilder;
-    this.timestampParsers = timestampParsers;
-  }
-
-  public void reset(ObjectNode objectNode)
-  {
-    this.currentObjectNode = objectNode;
+    super(task, pageBuilder, timestampParsers);
   }
 
   @Override
   public void booleanColumn(Column column)
   {
-     boolean value = currentObjectNode.get(column.getName()).booleanValue();
-     pageBuilder.setBoolean(column, value);
+     JsonNode value = recordValue.get(column.getName());
+     if (value.isNull()) {
+       pageBuilder.setNull(column);
+       return;
+     }
+
+     pageBuilder.setBoolean(column, value.booleanValue());
   }
 
   @Override
   public void longColumn(Column column)
   {
-    long value = currentObjectNode.get(column.getName()).longValue();
-    pageBuilder.setLong(column, value);
+    if (super.isKeyColumn(column)) {
+      super.longColumnForKey(column);
+      return;
+    }
+
+    if (isPartitionColumn(column)) {
+      super.longColumnForPartition(column);
+      return;
+    }
+
+    JsonNode value = recordValue.get(column.getName());
+    if (value.isNull()) {
+      pageBuilder.setNull(column);
+      return;
+    }
+
+    pageBuilder.setLong(column, value.longValue());
   }
 
   @Override
   public void doubleColumn(Column column)
   {
-    double value = currentObjectNode.get(column.getName()).doubleValue();
-    pageBuilder.setDouble(column, value);
+    if (super.isKeyColumn(column)) {
+      super.doubleColumnForKey(column);
+      return;
+    }
+
+    JsonNode value = recordValue.get(column.getName());
+    if (value.isNull()) {
+      pageBuilder.setNull(column);
+      return;
+    }
+
+    pageBuilder.setDouble(column, value.doubleValue());
   }
 
   @Override
   public void stringColumn(Column column)
   {
-    String value = currentObjectNode.get(column.getName()).textValue();
-    pageBuilder.setString(column, value);
+    if (super.isKeyColumn(column)) {
+      super.stringColumnForKey(column);
+      return;
+    }
+
+    JsonNode value = recordValue.get(column.getName());
+    if (value.isNull()) {
+      pageBuilder.setNull(column);
+      return;
+    }
+
+    pageBuilder.setString(column, value.textValue());
   }
 
   @Override
   public void timestampColumn(Column column)
   {
-    String value = currentObjectNode.get(column.getName()).textValue();
-    Timestamp timestamp = timestampParsers[column.getIndex()].parse(value);
+    if (super.isKeyColumn(column)) {
+      super.timestampColumnForKey(column);
+      return;
+    }
+
+    JsonNode value = recordValue.get(column.getName());
+    if (value.isNull()) {
+      pageBuilder.setNull(column);
+      return;
+    }
+
+    Timestamp timestamp = timestampParsers[column.getIndex()].parse(value.textValue());
     pageBuilder.setTimestamp(column, timestamp);
   }
 
   @Override
   public void jsonColumn(Column column)
   {
-    JsonNode jsonNode = currentObjectNode.get(column.getName());
+    JsonNode jsonNode = recordValue.get(column.getName());
+    if (jsonNode.isNull()) {
+      pageBuilder.setNull(column);
+      return;
+    }
+
     pageBuilder.setJson(column, convertJsonValueToMsgpackValue(jsonNode));
   }
 

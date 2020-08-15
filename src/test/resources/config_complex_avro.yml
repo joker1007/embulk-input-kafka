@@ -1,7 +1,8 @@
 type: kafka
 topics:
-  - "json-complex-topic"
-serialize_format: json
+  - "avro-complex-topic"
+serialize_format: avro_with_schema_registry
+schema_registry_url: "mock://embulk-input-kafka"
 brokers:
   - "localhost:9092"
 fetch_max_wait_ms: 1000
@@ -9,7 +10,7 @@ columns:
   - {name: id, type: string}
   - {name: int_item, type: long}
   - {name: varchar_item, type: string}
-  - {name: time, type: timestamp, format: "%Y-%m-%dT%H:%M:%SZ"}
+  - {name: time, type: long}
   - {name: array, type: json}
   - {name: data, type: json}
   - {name: _key, type: string}

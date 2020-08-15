@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "namespace": "org.embulk.input.kafka",
+  "name": "SimpleRecordAvro",
+  "fields": [
+    {"name": "id", "type": "string"},
+    {"name": "int_item", "type": "long"},
+    {"name": "varchar_item", "type": "string"}
+  ]
+}
+
