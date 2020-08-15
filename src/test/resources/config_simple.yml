@@ -1,0 +1,10 @@
+type: kafka
+topics:
+  - "json-simple-topic"
+serialize_format: json
+brokers:
+  - "localhost:9092"
+columns:
+  - {name: id, type: string}
+  - {name: int_item, type: long}
+  - {name: varchar_item, type: string}

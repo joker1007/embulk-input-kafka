@@ -1,0 +1,135 @@
+plugins {
+    id "com.jfrog.bintray" version "1.1"
+    id "com.github.jruby-gradle.base" version "1.5.0"
+    id "java"
+    id "checkstyle"
+}
+import com.github.jrubygradle.JRubyExec
+repositories {
+    mavenCentral()
+    jcenter()
+
+    maven {
+        url "http://packages.confluent.io/maven/"
+    }
+}
+configurations {
+    provided
+}
+
+version = "0.1.0"
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+dependencies {
+    compile  "org.embulk:embulk-core:0.9.22"
+    provided "org.embulk:embulk-core:0.9.22"
+    // compile "YOUR_JAR_DEPENDENCY_GROUP:YOUR_JAR_DEPENDENCY_MODULE:YOUR_JAR_DEPENDENCY_VERSION"
+    testCompile "junit:junit:4.+"
+    testCompile "org.embulk:embulk-test:0.9.22"
+    testCompile "org.embulk:embulk-standards:0.9.22"
+    testCompile "org.embulk:embulk-deps-buffer:0.9.22"
+
+    compile "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7"
+    compile("org.apache.kafka:kafka-clients:2.5.1") {
+        exclude group: "org.slf4j", module: "slf4j-api"
+    }
+    compile("org.apache.avro:avro:1.9.0") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+        exclude group: "org.slf4j", module: "slf4j-api"
+    }
+    compile("io.confluent:kafka-avro-serializer:5.5.1") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+        exclude group: "org.slf4j", module: "slf4j-api"
+    }
+
+    testCompile "com.salesforce.kafka.test:kafka-junit4:3.+"
+    testCompile "com.fasterxml.jackson.dataformat:jackson-dataformat-csv:2.6.7"
+    testCompile "com.fasterxml.jackson.module:jackson-module-paranamer:2.6.7"
+    testCompile("org.apache.kafka:kafka_2.12:2.5.+") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+        exclude group: "com.fasterxml.jackson.dataformat", module: "jackson-dataformat-csv"
+        exclude group: "com.fasterxml.jackson.datatype", module: "jackson-datatype-jdk8"
+        exclude group: "com.fasterxml.jackson.module", module: "jackson-module-scala_2.12"
+        exclude group: "com.fasterxml.jackson.module", module: "jackson-module-paranamer"
+    }
+}
+
+task classpath(type: Copy, dependsOn: ["jar"]) {
+    doFirst { file("classpath").deleteDir() }
+    from (configurations.runtime - configurations.provided + files(jar.archivePath))
+    into "classpath"
+}
+clean { delete "classpath" }
+
+checkstyle {
+    configFile = file("${project.rootDir}/config/checkstyle/checkstyle.xml")
+    toolVersion = '6.14.1'
+}
+checkstyleMain {
+    configFile = file("${project.rootDir}/config/checkstyle/default.xml")
+    ignoreFailures = true
+}
+checkstyleTest {
+    configFile = file("${project.rootDir}/config/checkstyle/default.xml")
+    ignoreFailures = true
+}
+task checkstyle(type: Checkstyle) {
+    classpath = sourceSets.main.output + sourceSets.test.output
+    source = sourceSets.main.allJava + sourceSets.test.allJava
+}
+
+task gem(type: JRubyExec, dependsOn: ["gemspec", "classpath"]) {
+    jrubyArgs "-S"
+    script "gem"
+    scriptArgs "build", "${project.name}.gemspec"
+    doLast { ant.move(file: "${project.name}-${project.version}.gem", todir: "pkg") }
+}
+
+task gemPush(type: JRubyExec, dependsOn: ["gem"]) {
+    jrubyArgs "-S"
+    script "gem"
+    scriptArgs "push", "pkg/${project.name}-${project.version}.gem"
+}
+
+task "package"(dependsOn: ["gemspec", "classpath"]) {
+    doLast {
+        println "> Build succeeded."
+        println "> You can run embulk with '-L ${file(".").absolutePath}' argument."
+    }
+}
+
+task gemspec {
+    ext.gemspecFile = file("${project.name}.gemspec")
+    inputs.file "build.gradle"
+    outputs.file gemspecFile
+    doLast { gemspecFile.write($/
+Gem::Specification.new do |spec|
+  spec.name          = "${project.name}"
+  spec.version       = "${project.version}"
+  spec.authors       = ["joker1007"]
+  spec.summary       = %[Kafka input plugin for Embulk]
+  spec.description   = %[Loads records from Kafka.]
+  spec.email         = ["kakyoin.hierophant@gmail.com"]
+  spec.licenses      = ["MIT"]
+  # TODO set this: spec.homepage      = "https://github.com/kakyoin.hierophant/embulk-input-kafka"
+
+  spec.files         = `git ls-files`.split("\n") + Dir["classpath/*.jar"]
+  spec.test_files    = spec.files.grep(%r"^(test|spec)/")
+  spec.require_paths = ["lib"]
+
+  #spec.add_dependency 'YOUR_GEM_DEPENDENCY', ['~> YOUR_GEM_DEPENDENCY_VERSION']
+  spec.add_development_dependency 'bundler', ['~> 1.0']
+  spec.add_development_dependency 'rake', ['~> 12.0']
+end
+/$)
+    }
+}
+clean { delete "${project.name}.gemspec" }
