@@ -1,6 +1,6 @@
 type: kafka
 topics:
-  - "json-simple-topic"
+  - "json-complex-topic"
 serialize_format: json
 brokers:
   - "localhost:9092"
@@ -9,3 +9,6 @@ columns:
   - {name: id, type: string}
   - {name: int_item, type: long}
   - {name: varchar_item, type: string}
+  - {name: time, type: timestamp, format: "%Y-%m-%dT%H:%M:%SZ"}
+  - {name: array, type: json}
+  - {name: data, type: json}

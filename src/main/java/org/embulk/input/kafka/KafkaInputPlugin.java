@@ -26,6 +26,11 @@ import org.embulk.spi.PageBuilder;
 import org.embulk.spi.PageOutput;
 import org.embulk.spi.Schema;
 import org.embulk.spi.SchemaConfig;
+import org.embulk.spi.time.TimestampParser;
+import org.embulk.spi.time.TimestampParser.TimestampColumnOption;
+import org.embulk.spi.util.Timestamps;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.time.Duration;
@@ -67,7 +72,7 @@ public class KafkaInputPlugin
     }
 
     public interface PluginTask
-            extends Task
+            extends Task, TimestampParser.Task
     {
         @Config("brokers")
         public List<String> getBrokers();
@@ -98,6 +103,14 @@ public class KafkaInputPlugin
         @ConfigDefault("null")
         public java.util.Optional<String> getPartitionColumnName();
 
+        @Config("fetch_max_wait_ms")
+        @ConfigDefault("30000")
+        public int getFetchMaxWaitMs();
+
+        @Config("max_empty_pollings")
+        @ConfigDefault("2")
+        public int getMaxEmptyPollings();
+
         @Config("other_consumer_configs")
         @ConfigDefault("{}")
         public Map<String, String> getOtherConsumerConfigs();
@@ -111,6 +124,7 @@ public class KafkaInputPlugin
     }
 
     private static Map<Integer, List<PartitionInfo>> assignments = new HashMap<>();
+    private static Logger logger = LoggerFactory.getLogger(KafkaInputPlugin.class);
 
     @Override
     public ConfigDiff transaction(ConfigSource config,
@@ -172,12 +186,35 @@ public class KafkaInputPlugin
         consumer.assign(topicPartitions);
 
         BufferAllocator allocator = Exec.getBufferAllocator();
-        PageBuilder pageBuilder = new PageBuilder(allocator, schema, output);
+        try (PageBuilder pageBuilder = new PageBuilder(allocator, schema, output)) {
+            final TimestampParser[] timestampParsers = Timestamps
+                .newTimestampColumnParsers(task, task.getColumns());
+            final JsonFormatColumnVisitor columnVisitor = new JsonFormatColumnVisitor(pageBuilder,
+                timestampParsers);
 
-        consumer.seekToBeginning(topicPartitions);
-        ConsumerRecords<String, ObjectNode> records = consumer.poll(Duration.ofSeconds(30));
-        records.forEach(System.out::println);
+            consumer.seekToBeginning(topicPartitions);
+            int emptyPollingCount = 0;
 
+            while (true) {
+                ConsumerRecords<String, ObjectNode> records = consumer
+                    .poll(Duration.ofMillis(task.getFetchMaxWaitMs()));
+                if (records.isEmpty()) {
+                    emptyPollingCount += 1;
+                    logger.info("polling results are empty. remaining count is {}",
+                        task.getMaxEmptyPollings() - emptyPollingCount);
+                    if (emptyPollingCount >= 2) {
+                        break;
+                    }
+                }
+                records.forEach(record -> {
+                    columnVisitor.reset(record.value());
+                    schema.visitColumns(columnVisitor);
+                    pageBuilder.addRecord();
+                });
+            }
+
+            pageBuilder.finish();
+        }
         TaskReport taskReport = Exec.newTaskReport();
         return taskReport;
     }
