@@ -49,7 +49,6 @@ import java.util.stream.IntStream;
 public class KafkaInputPlugin
     implements InputPlugin
 {
-
   static final String MOCK_SCHEMA_REGISTRY_SCOPE = "embulk-input-kafka";
 
   public enum RecordSerializeFormat
@@ -129,12 +128,53 @@ public class KafkaInputPlugin
       }
 
       throw new ConfigException(String
-          .format("Unknown seek mode '%s'. Supported modes are json, avro_with_schema_registry",
+          .format("Unknown seek mode '%s'. Supported modes are earliest, timestamp",
               name));
     }
 
     public abstract void seek(KafkaConsumer<?, ?> consumer, List<TopicPartition> topicPartitions,
         Optional<Long> timestamp);
+  }
+
+  public enum TerminationMode {
+    OFFSET_AT_START {
+      @Override
+      public Map<TopicPartition, Long> getOffsetsForTermination(
+          KafkaConsumer<?, ?> consumer,
+          List<TopicPartition> topicPartitions)
+      {
+        return consumer.endOffsets(topicPartitions);
+      }
+    },
+    ENDLESS {
+      @Override
+      public Map<TopicPartition, Long> getOffsetsForTermination(
+          KafkaConsumer<?, ?> consumer,
+          List<TopicPartition> topicPartitions)
+      {
+        return ImmutableMap.of();
+      }
+    };
+
+    @JsonCreator
+    public static TerminationMode ofString(String name)
+    {
+      switch (name.toLowerCase(Locale.ENGLISH)) {
+        case "offset_at_start":
+          return OFFSET_AT_START;
+        case "endless":
+          return ENDLESS;
+        default:
+      }
+
+      throw new ConfigException(String
+          .format("Unknown seek mode '%s'. Supported modes are offset_at_start, endless",
+              name));
+    }
+
+    public abstract Map<TopicPartition, Long> getOffsetsForTermination(
+        KafkaConsumer<?, ?> consumer,
+        List<TopicPartition> topicPartitions);
   }
 
   public interface PluginTask
@@ -156,6 +196,10 @@ public class KafkaInputPlugin
     @Config("seek_mode")
     @ConfigDefault("\"earliest\"")
     public SeekMode getSeekMode();
+
+    @Config("termination_mode")
+    @ConfigDefault("\"offset_at_start\"")
+    public TerminationMode getTerminationMode();
 
     @Config("timestamp_for_seeking")
     @ConfigDefault("null")
@@ -301,7 +345,6 @@ public class KafkaInputPlugin
 
   abstract static class AbstractInputProcess<V>
   {
-
     protected final PluginTask task;
     private final Schema schema;
     private final PageOutput output;
@@ -328,8 +371,9 @@ public class KafkaInputPlugin
     public void run()
     {
       try (KafkaConsumer<Bytes, V> consumer = getConsumer()) {
-        Map<TopicPartition, Long> offsetsForTermination = consumer
-            .endOffsets(topicPartitions);
+        Map<TopicPartition, Long> offsetsForTermination = task
+            .getTerminationMode()
+            .getOffsetsForTermination(consumer, topicPartitions);
 
         assignAndSeek(task, topicPartitions, offsetsForTermination, consumer);
 
@@ -366,7 +410,8 @@ public class KafkaInputPlugin
 
               TopicPartition topicPartition = new TopicPartition(record.topic(),
                   record.partition());
-              if (record.offset() >= offsetsForTermination.get(topicPartition) - 1) {
+              if (task.getTerminationMode() == TerminationMode.OFFSET_AT_START
+                  && record.offset() >= offsetsForTermination.get(topicPartition) - 1) {
                 reassign = true;
                 topicPartitions.remove(topicPartition);
               }
