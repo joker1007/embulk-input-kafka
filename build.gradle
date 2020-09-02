@@ -23,14 +23,18 @@ sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
 dependencies {
-    compile  "org.embulk:embulk-core:0.9.22"
+    compileOnly "org.embulk:embulk-core:0.9.23"
 
     testCompile "junit:junit:4.+"
-    testCompile "org.embulk:embulk-test:0.9.22"
-    testCompile "org.embulk:embulk-standards:0.9.22"
-    testCompile "org.embulk:embulk-deps-buffer:0.9.22"
+    testCompile "org.embulk:embulk-test:0.9.23"
+    testCompile "org.embulk:embulk-standards:0.9.23"
+    testCompile "org.embulk:embulk-deps-buffer:0.9.23"
 
-    compile "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7"
+    compile("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+    }
     compile("org.apache.kafka:kafka-clients:2.5.1") {
         exclude group: "org.slf4j", module: "slf4j-api"
     }
