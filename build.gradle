@@ -29,6 +29,7 @@ dependencies {
     testCompile "org.embulk:embulk-test:0.9.23"
     testCompile "org.embulk:embulk-standards:0.9.23"
     testCompile "org.embulk:embulk-deps-buffer:0.9.23"
+    testCompile "org.embulk:embulk-deps-config:0.9.23"
 
     compile("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7") {
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
