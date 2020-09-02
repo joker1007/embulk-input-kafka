@@ -23,29 +23,53 @@ sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
 dependencies {
-    compile  "org.embulk:embulk-core:0.9.22"
+    compileOnly "org.embulk:embulk-api:0.10.13"
+    compileOnly "org.embulk:embulk-spi:0.10.13"
+
+    compileOnly "org.embulk:embulk-core:0.10.13"
 
     testCompile "junit:junit:4.+"
-    testCompile "org.embulk:embulk-test:0.9.22"
-    testCompile "org.embulk:embulk-standards:0.9.22"
-    testCompile "org.embulk:embulk-deps-buffer:0.9.22"
+    testCompile "org.embulk:embulk-test:0.10.13"
+    testCompile "org.embulk:embulk-standards:0.10.13"
+    testCompile "org.embulk:embulk-deps:0.10.13"
 
-    compile "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7"
+    compile("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7") {
+        // They conflict with embulk-core. They are once excluded here,
+        // and added explicitly with versions exactly the same with embulk-core:0.10.13.
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+    }
     compile("org.apache.kafka:kafka-clients:2.5.1") {
+        // slf4j-api conflicts with embulk-api/core. It should be excluded.
         exclude group: "org.slf4j", module: "slf4j-api"
     }
     compile("org.apache.avro:avro:1.9.0") {
+        // They conflict with embulk-core. They are once excluded here,
+        // and added explicitly with versions exactly the same with embulk-core:0.10.13.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+
+        // slf4j-api conflicts with embulk-api/core. It should be excluded.
         exclude group: "org.slf4j", module: "slf4j-api"
     }
     compile("io.confluent:kafka-avro-serializer:5.5.1") {
+        // They conflict with embulk-core. They are once excluded here,
+        // and added explicitly with versions exactly the same with embulk-core:0.10.13.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+
+        // slf4j-api conflicts with embulk-api/core. It should be excluded.
         exclude group: "org.slf4j", module: "slf4j-api"
     }
+
+    // They are once excluded from transitive dependencies of other dependencies,
+    // and added explicitly with versions exactly the same with embulk-core:0.10.5.
+    compile "com.fasterxml.jackson.core:jackson-annotations:2.6.7"
+    compile "com.fasterxml.jackson.core:jackson-core:2.6.7"
+    compile "com.fasterxml.jackson.core:jackson-databind:2.6.7"
 
     testCompile "com.salesforce.kafka.test:kafka-junit4:3.+"
     testCompile "com.fasterxml.jackson.dataformat:jackson-dataformat-csv:2.6.7"
@@ -65,6 +89,14 @@ embulkPlugin {
     mainClass = "org.embulk.input.kafka.KafkaInputPlugin"
     category = "input"
     type = "kafka"
+    ignoreConflicts = [
+        // They conflict with embulk-core:0.10.13, but embulk-core will remove them from its dependencies.
+        // They are intentionally included in the plugin's dependencies to keep it working before and after the removal.
+        // Warning messages against them are marked to ignore explicitly here.
+        [ group: "com.fasterxml.jackson.core", module: "jackson-annotations" ],
+        [ group: "com.fasterxml.jackson.core", module: "jackson-core" ],
+        [ group: "com.fasterxml.jackson.core", module: "jackson-databind" ],
+    ]
 }
 
 test {
