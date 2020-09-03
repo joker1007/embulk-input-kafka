@@ -1,19 +1,11 @@
-buildscript {
-    repositories {
-        jcenter()
-    }
-    dependencies {
-        classpath "com.commercehub.gradle.plugin:gradle-avro-plugin:0.18.0"
-    }
-}
-
 plugins {
     id "com.jfrog.bintray" version "1.8.5"
-    id "com.github.jruby-gradle.base" version "1.6.0"
+    id 'com.commercehub.gradle.plugin.avro' version '0.20.0'
+    id "org.embulk.embulk-plugins" version "0.4.2"
     id "java"
     id "checkstyle"
 }
-import com.github.jrubygradle.JRubyExec
+
 repositories {
     mavenCentral()
     jcenter()
@@ -22,26 +14,28 @@ repositories {
         url "http://packages.confluent.io/maven/"
     }
 }
-configurations {
-    provided
-}
-apply plugin: "com.commercehub.gradle.plugin.avro"
 
+group = "org.embulk.input.kafka"
 version = "0.1.0"
+description = "Embulk input plugin for Apache Kafka"
 
 sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
 dependencies {
-    compile  "org.embulk:embulk-core:0.9.22"
-    provided "org.embulk:embulk-core:0.9.22"
-    // compile "YOUR_JAR_DEPENDENCY_GROUP:YOUR_JAR_DEPENDENCY_MODULE:YOUR_JAR_DEPENDENCY_VERSION"
-    testCompile "junit:junit:4.+"
-    testCompile "org.embulk:embulk-test:0.9.22"
-    testCompile "org.embulk:embulk-standards:0.9.22"
-    testCompile "org.embulk:embulk-deps-buffer:0.9.22"
+    compileOnly "org.embulk:embulk-core:0.9.23"
 
-    compile "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7"
+    testCompile "junit:junit:4.+"
+    testCompile "org.embulk:embulk-test:0.9.23"
+    testCompile "org.embulk:embulk-standards:0.9.23"
+    testCompile "org.embulk:embulk-deps-buffer:0.9.23"
+    testCompile "org.embulk:embulk-deps-config:0.9.23"
+
+    compile("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.6.7") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+    }
     compile("org.apache.kafka:kafka-clients:2.5.1") {
         exclude group: "org.slf4j", module: "slf4j-api"
     }
@@ -72,17 +66,21 @@ dependencies {
     }
 }
 
+embulkPlugin {
+    mainClass = "org.embulk.input.kafka.KafkaInputPlugin"
+    category = "input"
+    type = "kafka"
+}
+
+test {
+    minHeapSize = "512m"
+    maxHeapSize = "4g"
+}
+
 avro {
     dateTimeLogicalType = 'JSR310'
     createOptionalGetters = true
 }
-
-task classpath(type: Copy, dependsOn: ["jar"]) {
-    doFirst { file("classpath").deleteDir() }
-    from (configurations.runtime - configurations.provided + files(jar.archivePath))
-    into "classpath"
-}
-clean { delete "classpath" }
 
 checkstyle {
     configFile = file("${project.rootDir}/config/checkstyle/checkstyle.xml")
@@ -101,19 +99,6 @@ task checkstyle(type: Checkstyle) {
     source = sourceSets.main.allJava + sourceSets.test.allJava
 }
 
-task gem(type: JRubyExec, dependsOn: ["gemspec", "classpath"]) {
-    jrubyArgs "-S"
-    script "gem"
-    scriptArgs "build", "${project.name}.gemspec"
-    doLast { ant.move(file: "${project.name}-${project.version}.gem", todir: "pkg") }
-}
-
-task gemPush(type: JRubyExec, dependsOn: ["gem"]) {
-    jrubyArgs "-S"
-    script "gem"
-    scriptArgs "push", "pkg/${project.name}-${project.version}.gem"
-}
-
 task "package"(dependsOn: ["gemspec", "classpath"]) {
     doLast {
         println "> Build succeeded."
@@ -121,29 +106,16 @@ task "package"(dependsOn: ["gemspec", "classpath"]) {
     }
 }
 
-task gemspec {
-    ext.gemspecFile = file("${project.name}.gemspec")
-    inputs.file "build.gradle"
-    outputs.file gemspecFile
-    doLast { gemspecFile.write($/
-Gem::Specification.new do |spec|
-  spec.name          = "${project.name}"
-  spec.version       = "${project.version}"
-  spec.authors       = ["joker1007"]
-  spec.summary       = %[Kafka input plugin for Embulk]
-  spec.description   = %[Loads records from Kafka.]
-  spec.email         = ["kakyoin.hierophant@gmail.com"]
-  spec.licenses      = ["MIT"]
-  spec.homepage      = "https://github.com/joker1007/embulk-input-kafka"
-
-  spec.files         = `git ls-files`.split("\n") + Dir["classpath/*.jar"]
-  spec.test_files    = spec.files.grep(%r"^(test|spec)/")
-  spec.require_paths = ["lib"]
-
-  spec.add_development_dependency 'bundler', ['~> 1.0']
-  spec.add_development_dependency 'rake', ['~> 12.0']
-end
-/$)
-    }
+gem {
+    from("LICENSE.txt")
+    authors = [ "joker1007" ]
+    email = [ "kakyoin.hierophant@gmail.com" ]
+    description = "Kafka input plugin for Embulk"
+    summary = "Kafka input plugin for Embulk"
+    homepage = "https://github.com/joker1007/embulk-output-kafka"
+    licenses = [ "MIT" ]
 }
-clean { delete "${project.name}.gemspec" }
+
+gemPush {
+    host = "https://rubygems.org"
+}
