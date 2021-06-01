@@ -3,12 +3,13 @@ package org.embulk.input.kafka;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Instant;
 import org.embulk.input.kafka.KafkaInputPlugin.PluginTask;
 import org.embulk.spi.Column;
 import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.PageBuilder;
 import org.embulk.spi.time.Timestamp;
-import org.embulk.spi.time.TimestampParser;
+import org.embulk.util.timestamp.TimestampFormatter;
 import org.msgpack.value.Value;
 import org.msgpack.value.ValueFactory;
 
@@ -19,9 +20,9 @@ import java.util.Map;
 
 public class JsonFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<ObjectNode> implements ColumnVisitor
 {
-  public JsonFormatColumnVisitor(PluginTask task, PageBuilder pageBuilder, TimestampParser[] timestampParsers)
+  public JsonFormatColumnVisitor(PluginTask task, PageBuilder pageBuilder, TimestampFormatter[] timestampFormatters)
   {
-    super(task, pageBuilder, timestampParsers);
+    super(task, pageBuilder, timestampFormatters);
   }
 
   @Override
@@ -92,6 +93,7 @@ public class JsonFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
     pageBuilder.setString(column, value.textValue());
   }
 
+  @SuppressWarnings("deprecation")
   @Override
   public void timestampColumn(Column column)
   {
@@ -106,7 +108,8 @@ public class JsonFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
       return;
     }
 
-    Timestamp timestamp = timestampParsers[column.getIndex()].parse(value.textValue());
+    Instant instant = timestampFormatters[column.getIndex()].parse(value.textValue());
+    Timestamp timestamp = Timestamp.ofInstant(instant);
     pageBuilder.setTimestamp(column, timestamp);
   }
 
