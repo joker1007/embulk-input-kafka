@@ -88,6 +88,23 @@ dependencies {
     }
 }
 
+java {
+    withJavadocJar()
+    withSourcesJar()
+}
+
+jar {
+    from rootProject.file("LICENSE.txt")
+}
+
+javadocJar {
+    from rootProject.file("LICENSE.txt")
+}
+
+sourcesJar {
+    from rootProject.file("LICENSE.txt")
+}
+
 embulkPlugin {
     mainClass = "org.embulk.input.kafka.KafkaInputPlugin"
     category = "input"
@@ -133,10 +150,95 @@ gem {
     email = [ "kakyoin.hierophant@gmail.com" ]
     description = "Kafka input plugin for Embulk"
     summary = "Kafka input plugin for Embulk"
-    homepage = "https://github.com/joker1007/embulk-output-kafka"
+    homepage = "https://github.com/joker1007/embulk-input-kafka"
     licenses = [ "MIT" ]
 }
 
 gemPush {
     host = "https://rubygems.org"
+}
+
+task generateEmbulkProperties {
+    doLast {
+        mkdir ".embulk"
+        def f = file(".embulk/embulk.properties")
+        f.write("m2_repo=${System.properties["user.home"]}/.m2/repository\nplugins.input.kafka=maven:${project.group}:kafka:${project.version}")
+    }
+}
+
+publishing {
+    publications {
+        embulkPluginMaven(MavenPublication) {  // Publish it with "publishEmbulkPluginMavenPublicationToMavenRepository".
+            from components.java  // Must be "components.java". The dependency modification works only for it.
+            pom {
+                name = "embulk-input-kafka"
+                packaging = "jar"
+                description = "Embulk input plugin for Apache Kafka"
+                url = "https://github.com/joker1007/embulk-input-kafka"
+
+                licenses {
+                    license {
+                        // http://central.sonatype.org/pages/requirements.html#license-information
+                        name = "MIT License"
+                        url = "https://opensource.org/licenses/MIT"
+                    }
+                }
+
+                scm {
+                    connection = "scm:git://github.com/joker1007/embulk-input-kafka.git"
+                    developerConnection = "scm:git@github.com:joker1007/embulk-input-kafka.git"
+                    url = "https://github.com/joker1007/embulk-input-kafka"
+                }
+
+                developers {
+                    developer {
+                        id = "joker1007"
+                        name = "Tomohiro Hashidate"
+                        email = "kakyoin.hierophant@gmail.com"
+                    }
+                }
+            }
+        }
+    }
+    repositories {
+        maven {  // publishMavenPublicationToMavenCentralRepository
+            name = "mavenCentral"
+            if (project.version.endsWith("-SNAPSHOT")) {
+                url "https://s01.oss.sonatype.org/content/repositories/snapshots/"
+            } else {
+                url "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+            }
+
+            credentials {
+                username = project.hasProperty("ossrhUsername") ? ossrhUsername : ""
+                password = project.hasProperty("ossrhPassword") ? ossrhPassword : ""
+            }
+        }
+    }
+}
+
+signing {
+    useGpgCmd()
+    sign publishing.publications.embulkPluginMaven
+}
+
+tasks.withType(Sign) {
+    onlyIf { System.getenv().get("SKIP_SIGNING") == null }
+}
+
+tasks.withType(GenerateMavenPom) {
+    doLast {
+        def f = file("${buildDir.name}/publications/embulkPluginMaven/pom-default.xml")
+        def parser = new XmlParser()
+        def xml = parser.parse(f)
+        def repos = "<repositories>\n" +
+                "  <repository>\n" +
+                "    <id>confluent</id>\n" +
+                "    <url>https://packages.confluent.io/maven/</url>\n" +
+                "  </repository>\n" +
+                "</repositories>\n"
+        def reposNode = parser.parseText(repos)
+        xml.append(reposNode)
+        f.write(groovy.xml.XmlUtil.serialize(xml))
+    }
 }
