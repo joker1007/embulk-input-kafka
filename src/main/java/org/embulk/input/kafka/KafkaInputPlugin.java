@@ -3,9 +3,19 @@ package org.embulk.input.kafka;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.collect.ImmutableMap;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -15,12 +25,9 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.BytesDeserializer;
 import org.apache.kafka.common.utils.Bytes;
-import org.embulk.config.Config;
-import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigDiff;
 import org.embulk.config.ConfigException;
 import org.embulk.config.ConfigSource;
-import org.embulk.config.Task;
 import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
 import org.embulk.spi.BufferAllocator;
@@ -29,22 +36,19 @@ import org.embulk.spi.InputPlugin;
 import org.embulk.spi.PageBuilder;
 import org.embulk.spi.PageOutput;
 import org.embulk.spi.Schema;
-import org.embulk.spi.SchemaConfig;
-import org.embulk.spi.time.TimestampParser;
-import org.embulk.spi.util.Timestamps;
+import org.embulk.spi.type.TimestampType;
+import org.embulk.util.config.Config;
+import org.embulk.util.config.ConfigDefault;
+import org.embulk.util.config.ConfigMapper;
+import org.embulk.util.config.ConfigMapperFactory;
+import org.embulk.util.config.Task;
+import org.embulk.util.config.TaskMapper;
+import org.embulk.util.config.modules.TypeModule;
+import org.embulk.util.config.units.ColumnConfig;
+import org.embulk.util.config.units.SchemaConfig;
+import org.embulk.util.timestamp.TimestampFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Properties;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public class KafkaInputPlugin
     implements InputPlugin
@@ -152,7 +156,7 @@ public class KafkaInputPlugin
           KafkaConsumer<?, ?> consumer,
           List<TopicPartition> topicPartitions)
       {
-        return ImmutableMap.of();
+        return new HashMap<>();
       }
     };
 
@@ -168,7 +172,7 @@ public class KafkaInputPlugin
       }
 
       throw new ConfigException(String
-          .format("Unknown seek mode '%s'. Supported modes are offset_at_start, endless",
+          .format("Unknown termination mode '%s'. Supported modes are offset_at_start, endless",
               name));
     }
 
@@ -178,79 +182,116 @@ public class KafkaInputPlugin
   }
 
   public interface PluginTask
-      extends Task, TimestampParser.Task
+      extends Task
   {
     @Config("brokers")
-    public List<String> getBrokers();
+    List<String> getBrokers();
 
     @Config("topics")
-    public List<String> getTopics();
+    List<String> getTopics();
 
     @Config("schema_registry_url")
     @ConfigDefault("null")
-    public Optional<String> getSchemaRegistryUrl();
+    Optional<String> getSchemaRegistryUrl();
 
     @Config("serialize_format")
-    public RecordSerializeFormat getRecordSerializeFormat();
+    RecordSerializeFormat getRecordSerializeFormat();
 
     @Config("seek_mode")
     @ConfigDefault("\"earliest\"")
-    public SeekMode getSeekMode();
+    SeekMode getSeekMode();
 
     @Config("termination_mode")
     @ConfigDefault("\"offset_at_start\"")
-    public TerminationMode getTerminationMode();
+    TerminationMode getTerminationMode();
 
     @Config("timestamp_for_seeking")
     @ConfigDefault("null")
-    public Optional<Long> getTimestampForSeeking();
+    Optional<Long> getTimestampForSeeking();
 
     @Config("key_column_name")
     @ConfigDefault("\"_key\"")
-    public String getKeyColumnName();
+    String getKeyColumnName();
 
     @Config("partition_column_name")
     @ConfigDefault("\"_partition\"")
-    public String getPartitionColumnName();
+    String getPartitionColumnName();
 
     @Config("fetch_max_wait_ms")
     @ConfigDefault("30000")
-    public int getFetchMaxWaitMs();
+    int getFetchMaxWaitMs();
 
     @Config("max_empty_pollings")
     @ConfigDefault("2")
-    public int getMaxEmptyPollings();
+    int getMaxEmptyPollings();
 
     @Config("other_consumer_configs")
     @ConfigDefault("{}")
-    public Map<String, String> getOtherConsumerConfigs();
+    Map<String, String> getOtherConsumerConfigs();
 
     @Config("value_subject_name_strategy")
     @ConfigDefault("null")
-    public java.util.Optional<String> getValueSubjectNameStrategy();
+    Optional<String> getValueSubjectNameStrategy();
 
     @Config("columns")
-    public SchemaConfig getColumns();
+    SchemaConfig getSchemaConfig();
+
+    // From org.embulk.spi.time.TimestampParser.Task.
+    @Config("default_timezone_offset")
+    @ConfigDefault("\"+0000\"")
+    String getDefaultTimeZoneOffset();
+
+    // From org.embulk.spi.time.TimestampParser.Task.
+    @Config("default_timestamp_format")
+    @ConfigDefault("\"java:uuuu-MM-dd HH:mm:ss.nnnnnn Z\"")
+    String getDefaultTimestampFormat();
+
+    // From org.embulk.spi.time.TimestampParser.Task.
+    @Config("default_date")
+    @ConfigDefault("\"1970-01-01\"")
+    String getDefaultDate();
 
     @Config("assignments")
     @ConfigDefault("[]")
-    public List<List<String>> getAssignments();
+    List<List<String>> getAssignments();
 
-    public void setAssignments(List<List<String>> assignments);
+    void setAssignments(List<List<String>> assignments);
   }
 
-  private static Logger logger = LoggerFactory.getLogger(KafkaInputPlugin.class);
+  private interface TimestampColumnOption extends org.embulk.util.config.Task {
+    @Config("timezone")
+    @ConfigDefault("null")
+    Optional<String> getTimeZoneOffset();
+
+    @Config("format")
+    @ConfigDefault("null")
+    Optional<String> getFormat();
+
+    @Config("date")
+    @ConfigDefault("null")
+    Optional<String> getDate();
+  }
+
+  private static final ConfigMapperFactory CONFIG_MAPPER_FACTORY = ConfigMapperFactory.builder()
+      .addDefaultModules()
+      .addModule(new TypeModule())
+      .build();
+
+  private static final Logger logger = LoggerFactory.getLogger(KafkaInputPlugin.class);
 
   @Override
   public ConfigDiff transaction(ConfigSource config,
       InputPlugin.Control control)
   {
-    PluginTask task = config.loadConfig(PluginTask.class);
 
-    Schema schema = task.getColumns().toSchema();
+    final ConfigMapper configMapper = CONFIG_MAPPER_FACTORY.createConfigMapper();
+    final PluginTask task = configMapper.map(config, PluginTask.class);
+
+    Schema schema = task.getSchemaConfig().toSchema();
 
     Properties props = new Properties();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, task.getBrokers());
+    props.put(ConsumerConfig.CLIENT_ID_CONFIG, "embulk-input-kafka-assignment");
     KafkaConsumer<Bytes, Bytes> consumer = new KafkaConsumer<>(props, new BytesDeserializer(),
         new BytesDeserializer());
     int maxTaskCount = Runtime.getRuntime().availableProcessors() * 2;
@@ -260,7 +301,7 @@ public class KafkaInputPlugin
 
     task.setAssignments(assignments);
 
-    return resume(task.dump(), schema, taskCount, control);
+    return resume(task.toTaskSource(), schema, taskCount, control);
   }
 
   private List<List<String>> buildAssignments(KafkaConsumer<?, ?> consumer, List<String> topics,
@@ -303,7 +344,7 @@ public class KafkaInputPlugin
       InputPlugin.Control control)
   {
     control.run(taskSource, schema, taskCount);
-    return Exec.newConfigDiff();
+    return CONFIG_MAPPER_FACTORY.newConfigDiff();
   }
 
   @Override
@@ -318,11 +359,17 @@ public class KafkaInputPlugin
       Schema schema, int taskIndex,
       PageOutput output)
   {
-    PluginTask task = taskSource.loadTask(PluginTask.class);
+
+    final TaskMapper taskMapper = CONFIG_MAPPER_FACTORY.createTaskMapper();
+    final PluginTask task = taskMapper.map(taskSource, PluginTask.class);
 
     Properties props = new Properties();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, task.getBrokers());
+    props.put(ConsumerConfig.CLIENT_ID_CONFIG, "embulk-input-kafka-consumer");
     task.getOtherConsumerConfigs().forEach(props::setProperty);
+    String baseId = props.getProperty(ConsumerConfig.CLIENT_ID_CONFIG);
+    props.put(ConsumerConfig.CLIENT_ID_CONFIG, baseId + "-" + taskIndex);
+
     List<TopicPartition> topicPartitions = buildTopicPartitions(task.getAssignments(), taskIndex);
     switch (task.getRecordSerializeFormat()) {
       case JSON:
@@ -339,8 +386,7 @@ public class KafkaInputPlugin
         throw new ConfigException("Unknown record_serialization_format");
     }
 
-    TaskReport taskReport = Exec.newTaskReport();
-    return taskReport;
+    return CONFIG_MAPPER_FACTORY.newTaskReport();
   }
 
   abstract static class AbstractInputProcess<V>
@@ -350,7 +396,7 @@ public class KafkaInputPlugin
     private final PageOutput output;
     protected final Properties props;
     private final List<TopicPartition> topicPartitions;
-    protected final TimestampParser[] timestampParsers;
+    protected final TimestampFormatter[] timestampFormatters;
 
     protected AbstractInputProcess(PluginTask task, Schema schema,
         PageOutput output, Properties props,
@@ -361,13 +407,14 @@ public class KafkaInputPlugin
       this.output = output;
       this.props = props;
       this.topicPartitions = topicPartitions;
-      this.timestampParsers = Timestamps.newTimestampColumnParsers(task, task.getColumns());
+      this.timestampFormatters = newTimestampColumnFormatters(task, task.getSchemaConfig());
     }
 
     public abstract KafkaConsumer<Bytes, V> getConsumer();
 
     public abstract AbstractKafkaInputColumnVisitor<V> getColumnVisitor(PageBuilder pageBuilder);
 
+    @SuppressWarnings("deprecation")
     public void run()
     {
       try (KafkaConsumer<Bytes, V> consumer = getConsumer()) {
@@ -378,6 +425,7 @@ public class KafkaInputPlugin
         assignAndSeek(task, topicPartitions, offsetsForTermination, consumer);
 
         BufferAllocator allocator = Exec.getBufferAllocator();
+        // Use deprecated constructor for supporting embulk-0.9
         try (PageBuilder pageBuilder = new PageBuilder(allocator, schema, output)) {
           final AbstractKafkaInputColumnVisitor<V> columnVisitor = getColumnVisitor(pageBuilder);
 
@@ -460,7 +508,7 @@ public class KafkaInputPlugin
     @Override
     public AbstractKafkaInputColumnVisitor<ObjectNode> getColumnVisitor(PageBuilder pageBuilder)
     {
-      return new JsonFormatColumnVisitor(task, pageBuilder, timestampParsers);
+      return new JsonFormatColumnVisitor(task, pageBuilder, timestampFormatters);
     }
   }
 
@@ -479,14 +527,13 @@ public class KafkaInputPlugin
       String schemaRegistryUrl = task.getSchemaRegistryUrl().orElseThrow(
           () -> new ConfigException("avro_with_schema_registry format needs schema_registry_url"));
 
-      ImmutableMap.Builder<String, String> builder = ImmutableMap.<String, String>builder()
-          .put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+      Map<String, String> avroDeserializerConfig = new HashMap<>();
+      avroDeserializerConfig.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
 
       if (task.getValueSubjectNameStrategy().isPresent()) {
-        builder.put(AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY,
+        avroDeserializerConfig.put(AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY,
             task.getValueSubjectNameStrategy().get());
       }
-      Map<String, String> avroDeserializerConfig = builder.build();
       kafkaAvroDeserializer.configure(avroDeserializerConfig, false);
 
       return kafkaAvroDeserializer;
@@ -501,13 +548,35 @@ public class KafkaInputPlugin
     @Override
     public AbstractKafkaInputColumnVisitor<Object> getColumnVisitor(PageBuilder pageBuilder)
     {
-      return new AvroFormatColumnVisitor(task, pageBuilder, timestampParsers);
+      return new AvroFormatColumnVisitor(task, pageBuilder, timestampFormatters);
     }
   }
 
   @Override
   public ConfigDiff guess(ConfigSource config)
   {
-    return Exec.newConfigDiff();
+    return CONFIG_MAPPER_FACTORY.newConfigDiff();
+  }
+
+  private static TimestampFormatter[] newTimestampColumnFormatters(
+      final PluginTask task,
+      final SchemaConfig schema)
+  {
+    final TimestampFormatter[] formatters = new TimestampFormatter[schema.getColumnCount()];
+    int i = 0;
+    for (final ColumnConfig column : schema.getColumns()) {
+      if (column.getType() instanceof TimestampType) {
+        final TimestampColumnOption columnOption =
+            CONFIG_MAPPER_FACTORY.createConfigMapper().map(column.getOption(), TimestampColumnOption.class);
+
+        final String pattern = columnOption.getFormat().orElse(task.getDefaultTimestampFormat());
+        formatters[i] = TimestampFormatter.builder(pattern)
+            .setDefaultZoneFromString(columnOption.getTimeZoneOffset().orElse(task.getDefaultTimeZoneOffset()))
+            .setDefaultDateFromString(columnOption.getDate().orElse(task.getDefaultDate()))
+            .build();
+      }
+      i++;
+    }
+    return formatters;
   }
 }

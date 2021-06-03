@@ -1,5 +1,8 @@
 package org.embulk.input.kafka;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MappingIterator;
@@ -10,49 +13,52 @@ import com.fasterxml.jackson.dataformat.csv.CsvMapper;
 import com.fasterxml.jackson.dataformat.csv.CsvParser.Feature;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.salesforce.kafka.test.KafkaTestUtils;
 import com.salesforce.kafka.test.junit4.SharedKafkaTestResource;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.BytesSerializer;
-import org.apache.kafka.common.utils.Bytes;
-import org.embulk.config.ConfigSource;
-import org.embulk.spi.InputPlugin;
-import org.embulk.test.TestingEmbulk;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Rule;
-import org.junit.Test;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import java.util.stream.Stream;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.BytesSerializer;
+import org.apache.kafka.common.utils.Bytes;
+import org.embulk.config.ConfigSource;
+import org.embulk.formatter.csv.CsvFormatterPlugin;
+import org.embulk.output.file.LocalFileOutputPlugin;
+import org.embulk.spi.FileOutputPlugin;
+import org.embulk.spi.FormatterPlugin;
+import org.embulk.spi.InputPlugin;
+import org.embulk.test.TestingEmbulk;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
 
 public class TestKafkaInputPlugin
 {
 
-  @ClassRule
-  public static final SharedKafkaTestResource sharedKafkaTestResource = new SharedKafkaTestResource()
+  @Rule
+  public final SharedKafkaTestResource sharedKafkaTestResource = new SharedKafkaTestResource()
       .withBrokers(1);
 
   @Rule
   public TestingEmbulk embulk = TestingEmbulk.builder()
       .registerPlugin(InputPlugin.class, "kafka", KafkaInputPlugin.class)
+      .registerPlugin(FileOutputPlugin.class, "file", LocalFileOutputPlugin.class)
+      .registerPlugin(FormatterPlugin.class, "csv", CsvFormatterPlugin.class)
       .build();
 
   private KafkaTestUtils kafkaTestUtils;
@@ -61,11 +67,10 @@ public class TestKafkaInputPlugin
       .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
       .configure(SerializationFeature.WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS, false);
 
-  private List<String> topicNames = ImmutableList.of("json-simple-topic", "json-complex-topic", "avro-simple-topic", "avro-complex-topic");
+  private final List<String> topicNames = Arrays.asList("json-simple-topic", "json-complex-topic", "avro-simple-topic", "avro-complex-topic");
 
   @Before
-  public void setUp()
-  {
+  public void setUp() {
     kafkaTestUtils = sharedKafkaTestResource.getKafkaTestUtils();
     topicNames.forEach(topic -> {
       kafkaTestUtils.createTopic(topic, 48, (short) 1);
@@ -73,9 +78,14 @@ public class TestKafkaInputPlugin
   }
 
   @After
-  public void tearDown()
-  {
+  public void tearDown() {
     kafkaTestUtils.getAdminClient().deleteTopics(topicNames);
+  }
+
+  private List<String> brokersConfig()
+  {
+    return Collections.singletonList(
+        sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString());
   }
 
   @Test
@@ -96,7 +106,7 @@ public class TestKafkaInputPlugin
       kafkaTestUtils.produceRecords(records, "json-simple-topic", i);
     });
     ConfigSource configSource = embulk.loadYamlResource("config_simple.yml");
-    configSource.set("brokers", ImmutableList.of(sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString()));
+    configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-simple-json");
     Path outputPath = outputDir.resolve("out.csv");
     embulk.runInput(configSource, outputPath);
@@ -131,18 +141,20 @@ public class TestKafkaInputPlugin
               null,
               null,
               null,
-              ImmutableMap
-                  .of("key", innerMap));
+              Collections.singletonMap("key", innerMap));
         }
         else {
+          Map<String, String> innerMap = Stream.of(new String[][]{
+              {"inner-1", "value" + j},
+              {"inner-2", "value" + j}
+          }).collect(Collectors.toMap(data -> data[0], data -> data[1]));
           complexRecord = new ComplexRecord(
               recordId,
               j,
               "varchar_" + j,
               Instant.ofEpochMilli(1597510800000L), // 2020-08-15 17:00:00 +00:00
-              ImmutableList.of("hoge" + j, "fuga" + j),
-              ImmutableMap
-                  .of("key", ImmutableMap.of("inner-1", "value" + j, "inner-2", "value" + j)));
+              Arrays.asList("hoge" + j, "fuga" + j),
+              Collections.singletonMap("key", innerMap));
         }
         try {
           String value = objectMapper.writeValueAsString(complexRecord);
@@ -154,7 +166,7 @@ public class TestKafkaInputPlugin
       kafkaTestUtils.produceRecords(records, "json-complex-topic", i);
     });
     ConfigSource configSource = embulk.loadYamlResource("config_complex.yml");
-    configSource.set("brokers", ImmutableList.of(sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString()));
+    configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-complex-json");
     Path outputPath = outputDir.resolve("out.csv");
     embulk.runInput(configSource, outputPath);
@@ -208,7 +220,7 @@ public class TestKafkaInputPlugin
       kafkaTestUtils.produceRecords(records, "json-simple-topic", i);
     });
     ConfigSource configSource = embulk.loadYamlResource("config_simple.yml");
-    configSource.set("brokers", ImmutableList.of(sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString()));
+    configSource.set("brokers", brokersConfig());
     configSource.set("seek_mode", "timestamp");
     long now = Instant.now().toEpochMilli();
     configSource.set("timestamp_for_seeking", now);
@@ -268,7 +280,7 @@ public class TestKafkaInputPlugin
       kafkaProducer.close();
     });
     ConfigSource configSource = embulk.loadYamlResource("config_simple_avro.yml");
-    configSource.set("brokers", ImmutableList.of(sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString()));
+    configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-simple-avro");
     Path outputPath = outputDir.resolve("out.csv");
     embulk.runInput(configSource, outputPath);
@@ -295,6 +307,10 @@ public class TestKafkaInputPlugin
         String recordId = "ID-" + i + "-" + j;
         ComplexRecordAvro complexRecord;
         if (j == 2) {
+          Map<String, Long> map = Stream.of(new Object[][] {
+              {"key1", 1L},
+              {"key2", 2L}
+          }).collect(Collectors.toMap(data -> (String) data[0], data -> (Long) data[1]));
           complexRecord = ComplexRecordAvro.newBuilder()
               .setId(recordId)
               .setIntItem(j)
@@ -304,23 +320,27 @@ public class TestKafkaInputPlugin
               .setData(InnerData.newBuilder()
                   .setAaa(null)
                   .setHoge("hogehoge" + j)
-                  .setInnerArray(ImmutableList.of(4L, 5L))
-                  .setInnerMap(ImmutableMap.of("key1", 1L, "key2", 2L))
+                  .setInnerArray(Arrays.asList(4L, 5L))
+                  .setInnerMap(map)
                   .build())
               .build();
         }
         else {
+          Map<String, Long> map = Stream.of(new Object[][] {
+              {"key1", 1L},
+              {"key2", 2L}
+          }).collect(Collectors.toMap(data -> (String) data[0], data -> (Long) data[1]));
           complexRecord = ComplexRecordAvro.newBuilder()
               .setId(recordId)
               .setIntItem(j)
               .setVarcharItem("varchar_" + j)
               .setTime(1597510800000L) // 2020-08-15 17:00:00 +00:00
-              .setArray(ImmutableList.of(1L, 2L, 3L))
+              .setArray(Arrays.asList(1L, 2L, 3L))
               .setData(InnerData.newBuilder()
                   .setAaa("aaa" + j)
                   .setHoge("hogehoge" + j)
-                  .setInnerArray(ImmutableList.of(4L, 5L))
-                  .setInnerMap(ImmutableMap.of("key1", 1L, "key2", 2L))
+                  .setInnerArray(Arrays.asList(4L, 5L))
+                  .setInnerMap(map)
                   .build())
               .build();
         }
@@ -335,7 +355,7 @@ public class TestKafkaInputPlugin
       kafkaProducer.close();
     });
     ConfigSource configSource = embulk.loadYamlResource("config_complex_avro.yml");
-    configSource.set("brokers", ImmutableList.of(sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString()));
+    configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-complex-avro");
     Path outputPath = outputDir.resolve("out.csv");
     embulk.runInput(configSource, outputPath);

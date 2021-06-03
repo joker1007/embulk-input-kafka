@@ -1,13 +1,14 @@
 package org.embulk.input.kafka;
 
-import com.google.common.collect.ImmutableMap;
+import java.time.Instant;
+import java.util.HashMap;
 import org.apache.avro.generic.GenericRecord;
 import org.embulk.input.kafka.KafkaInputPlugin.PluginTask;
 import org.embulk.spi.Column;
 import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.PageBuilder;
 import org.embulk.spi.time.Timestamp;
-import org.embulk.spi.time.TimestampParser;
+import org.embulk.util.timestamp.TimestampFormatter;
 import org.msgpack.value.Value;
 import org.msgpack.value.ValueFactory;
 
@@ -25,9 +26,9 @@ public class AvroFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
     }
   }
 
-  public AvroFormatColumnVisitor(PluginTask task, PageBuilder pageBuilder, TimestampParser[] timestampParsers)
+  public AvroFormatColumnVisitor(PluginTask task, PageBuilder pageBuilder, TimestampFormatter[] timestampFormatters)
   {
-    super(task, pageBuilder, timestampParsers);
+    super(task, pageBuilder, timestampFormatters);
   }
 
   private GenericRecord genericRecord()
@@ -134,6 +135,7 @@ public class AvroFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
     pageBuilder.setString(column, value.toString());
   }
 
+  @SuppressWarnings("deprecation")
   @Override
   public void timestampColumn(Column column)
   {
@@ -148,7 +150,8 @@ public class AvroFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
       return;
     }
 
-    Timestamp timestamp = timestampParsers[column.getIndex()].parse(value.toString());
+    Instant instant = timestampFormatters[column.getIndex()].parse(value.toString());
+    Timestamp timestamp = Timestamp.ofInstant(instant);
     pageBuilder.setTimestamp(column, timestamp);
   }
 
@@ -163,11 +166,11 @@ public class AvroFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
   private Value convertAvroToValue(Object avroValue)
   {
     if (avroValue instanceof GenericRecord) {
-      ImmutableMap.Builder<Value, Value> builder = ImmutableMap.builder();
+      Map<Value, Value> map = new HashMap<>();
       GenericRecord record = (GenericRecord) avroValue;
-      record.getSchema().getFields().forEach(field -> builder
+      record.getSchema().getFields().forEach(field -> map
           .put(convertAvroToValue(field.name()), convertAvroToValue(record.get(field.name()))));
-      return ValueFactory.newMap(builder.build());
+      return ValueFactory.newMap(map);
     }
     else if (avroValue instanceof List<?>) {
       List<Value> values = ((List<?>) avroValue).stream().map(this::convertAvroToValue)
@@ -175,9 +178,9 @@ public class AvroFormatColumnVisitor extends AbstractKafkaInputColumnVisitor<Obj
       return ValueFactory.newArray(values);
     }
     else if (avroValue instanceof Map<?, ?>) {
-      ImmutableMap.Builder<Value, Value> builder = ImmutableMap.builder();
-      ((Map<?, ?>) avroValue).forEach((k, v) -> builder.put(convertAvroToValue(k), convertAvroToValue(v)));
-      return ValueFactory.newMap(builder.build());
+      Map<Value, Value> map = new HashMap<>();
+      ((Map<?, ?>) avroValue).forEach((k, v) -> map.put(convertAvroToValue(k), convertAvroToValue(v)));
+      return ValueFactory.newMap(map);
     }
     else if (avroValue instanceof Boolean) {
       return ValueFactory.newBoolean((Boolean) avroValue);

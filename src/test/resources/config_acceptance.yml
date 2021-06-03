@@ -1,0 +1,17 @@
+in:
+  type: kafka
+  topics:
+    - "json-simple-topic"
+  serialize_format: json
+  brokers:
+    - "localhost:9092"
+  fetch_max_wait_ms: 1000
+  columns:
+    - {name: id, type: string}
+    - {name: int_item, type: long}
+    - {name: varchar_item, type: string}
+  other_consumer_configs:
+    client.id: "client-id-test"
+
+out:
+  type: stdout
