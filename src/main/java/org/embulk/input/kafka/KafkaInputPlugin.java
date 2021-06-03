@@ -367,7 +367,7 @@ public class KafkaInputPlugin
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, task.getBrokers());
     props.put(ConsumerConfig.CLIENT_ID_CONFIG, "embulk-input-kafka-consumer");
     task.getOtherConsumerConfigs().forEach(props::setProperty);
-    String baseId = (String) props.get(ConsumerConfig.CLIENT_ID_CONFIG);
+    String baseId = props.getProperty(ConsumerConfig.CLIENT_ID_CONFIG);
     props.put(ConsumerConfig.CLIENT_ID_CONFIG, baseId + "-" + taskIndex);
 
     List<TopicPartition> topicPartitions = buildTopicPartitions(task.getAssignments(), taskIndex);

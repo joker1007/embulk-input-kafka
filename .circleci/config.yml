@@ -6,13 +6,7 @@ version: 2
 jobs:
   build:
     docker:
-      # specify the version you desire here
       - image: circleci/openjdk:8-jdk
-
-      # Specify service dependencies here if necessary
-      # CircleCI maintains a library of pre-built images
-      # documented at https://circleci.com/docs/2.0/circleci-images/
-      # - image: circleci/postgres:9.4
 
     working_directory: ~/repo
 
@@ -42,3 +36,149 @@ jobs:
       - run: ./gradlew test
       - store_test_results:
           path: build/test-results
+
+  embulk-0.9:
+    docker:
+      - image: circleci/openjdk:8-jdk
+      - image: wurstmeister/zookeeper
+      - image: wurstmeister/kafka:2.13-2.7.0
+        environment:
+          KAFKA_ADVERTISED_HOST_NAME: localhost
+          KAFKA_ADVERTISED_PORT: 9092
+          KAFKA_PORT: 9092
+          KAFKA_ZOOKEEPER_CONNECT: localhost:2181
+          KAFKA_DELETE_TOPIC_ENABLE: true
+          KAFKA_CREATE_TOPICS: "json-simple-topic:1:1"
+
+    working_directory: ~/repo
+    environment:
+      # Customize the JVM maximum heap limit
+      JVM_OPTS: -Xmx3200m
+      TERM: dumb
+
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - kafka-2.8.0
+
+      - run: |
+          if [ ! -d  kafka_2.12-2.8.0 ]; then curl -O -L https://downloads.apache.org/kafka/2.8.0/kafka_2.12-2.8.0.tgz && tar xvf kafka_2.12-2.8.0.tgz; fi
+
+      - save_cache:
+          paths:
+            - ~/repo/kafka_2.12-2.8.0
+          key: kafka-2.8.0
+
+      - run: |
+          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.12-2.8.0/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
+
+      - run: curl -o ./embulk -L https://github.com/embulk/embulk/releases/download/v0.9.23/embulk-0.9.23.jar
+      - run: chmod +x ./embulk
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            # fallback to using the latest cache if no exact match is found
+            - v1-dependencies-
+
+      - run: ./gradlew dependencies
+
+      - save_cache:
+          paths:
+            - ~/.gradle
+          key: v1-dependencies-{{ checksum "build.gradle" }}
+
+      - run: ./gradlew gem
+
+      - run:
+          name: run-embulk
+          command: ~/repo/embulk run -I ../../../build/gemContents/lib config_acceptance.yml
+          working_directory: src/test/resources
+
+  embulk-0.10:
+    docker:
+      - image: circleci/openjdk:8-jdk
+      - image: wurstmeister/zookeeper
+      - image: wurstmeister/kafka:2.13-2.7.0
+        environment:
+          KAFKA_ADVERTISED_HOST_NAME: localhost
+          KAFKA_ADVERTISED_PORT: 9092
+          KAFKA_PORT: 9092
+          KAFKA_ZOOKEEPER_CONNECT: localhost:2181
+          KAFKA_DELETE_TOPIC_ENABLE: true
+          KAFKA_CREATE_TOPICS: "json-simple-topic:1:1"
+
+    working_directory: ~/repo
+    environment:
+      # Customize the JVM maximum heap limit
+      JVM_OPTS: -Xmx3200m
+      TERM: dumb
+      SKIP_SIGNING: true
+
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - kafka-2.8.0
+
+      - run: |
+          if [ ! -d  kafka_2.12-2.8.0 ]; then curl -O -L https://downloads.apache.org/kafka/2.8.0/kafka_2.12-2.8.0.tgz && tar xvf kafka_2.12-2.8.0.tgz; fi
+
+      - save_cache:
+          paths:
+            - ~/repo/kafka_2.12-2.8.0
+          key: kafka-2.8.0
+
+      - run: |
+          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.12-2.8.0/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
+
+      - run: curl -o ./embulk -L https://github.com/embulk/embulk/releases/download/v0.10.31/embulk-0.10.31.jar
+      - run: chmod +x ./embulk
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            # fallback to using the latest cache if no exact match is found
+            - v1-dependencies-
+
+      - run: ./gradlew dependencies
+
+      - save_cache:
+          paths:
+            - ~/.gradle
+          key: v1-dependencies-{{ checksum "build.gradle" }}
+
+      - run: ./gradlew publishToMavenLocal
+
+      - run: cp build/publications/embulkPluginMaven/pom-default.xml pom.xml
+
+      - restore_cache:
+          keys:
+            - m2-v2-{{ checksum "pom.xml" }}-{{ checksum "build/libs/embulk-input-kafka-0.2.0.jar" }}
+
+      - run: mvn dependency:resolve
+
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: m2-v2-{{ checksum "pom.xml" }}-{{ checksum "build/libs/embulk-input-kafka-0.2.0.jar" }}
+
+      - run: ./gradlew generateEmbulkProperties
+
+      - run:
+          name: run-embulk
+          command: ~/repo/embulk run config_acceptance.yml
+          working_directory: src/test/resources
+
+workflows:
+  version: 2
+  test:
+    jobs:
+      - build
+      - embulk-0.9
+      - embulk-0.10
