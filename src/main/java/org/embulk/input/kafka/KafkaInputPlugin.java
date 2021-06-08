@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,6 +17,7 @@ import java.util.Properties;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -51,24 +53,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class KafkaInputPlugin
-    implements InputPlugin
-{
+    implements InputPlugin {
   static final String MOCK_SCHEMA_REGISTRY_SCOPE = "embulk-input-kafka";
 
-  public enum RecordSerializeFormat
-  {
+  public enum RecordSerializeFormat {
     JSON,
     AVRO_WITH_SCHEMA_REGISTRY;
 
     @JsonValue
-    public String toString()
-    {
+    public String toString() {
       return name().toLowerCase(Locale.ENGLISH);
     }
 
     @JsonCreator
-    public static RecordSerializeFormat ofString(String name)
-    {
+    public static RecordSerializeFormat ofString(String name) {
       switch (name.toLowerCase(Locale.ENGLISH)) {
         case "json":
           return JSON;
@@ -83,26 +81,23 @@ public class KafkaInputPlugin
     }
   }
 
-  public enum SeekMode
-  {
+  public enum SeekMode {
     EARLIEST {
       @Override
       public void seek(KafkaConsumer<?, ?> consumer,
-          List<TopicPartition> topicPartitions, Optional<Long> timestamp)
-      {
+                       List<TopicPartition> topicPartitions, PluginTask task) {
         consumer.seekToBeginning(topicPartitions);
       }
     },
     TIMESTAMP {
       @Override
       public void seek(KafkaConsumer<?, ?> consumer,
-          List<TopicPartition> topicPartitions, Optional<Long> timestamp)
-      {
-        if (timestamp.isPresent()) {
+                       List<TopicPartition> topicPartitions, PluginTask task) {
+        task.getTimestampForSeeking().ifPresent(timestamp -> {
           Map<TopicPartition, Long> topicPartitionWithTimestamp = topicPartitions.stream()
               .collect(Collectors
                   .toMap(topicPartition -> topicPartition,
-                      topicPartition -> timestamp.get()));
+                      topicPartition -> timestamp));
           Map<TopicPartition, OffsetAndTimestamp> topicPartitionOffsetAndTimestamp = consumer
               .offsetsForTimes(topicPartitionWithTimestamp);
           topicPartitionOffsetAndTimestamp.forEach(((topicPartition, offsetAndTimestamp) -> {
@@ -110,24 +105,38 @@ public class KafkaInputPlugin
               consumer.seek(topicPartition, offsetAndTimestamp.offset());
             }
           }));
-        }
+        });
+      }
+    },
+    OFFSET {
+      public void seek(KafkaConsumer<?, ?> consumer,
+                       List<TopicPartition> topicPartitions, PluginTask task) {
+        consumer.seekToBeginning(topicPartitions);
+        task.getOffsetsForSeeking().ifPresent(offsets -> topicPartitions.forEach(
+            topicPartition -> {
+              String key = topicPartition.topic() + ":" + topicPartition.partition();
+              if (offsets.containsKey(key)) {
+                consumer
+                    .seek(topicPartition, offsets.get(key));
+              }
+            }));
       }
     };
 
     @JsonValue
-    public String toString()
-    {
+    public String toString() {
       return name().toLowerCase(Locale.ENGLISH);
     }
 
     @JsonCreator
-    public static SeekMode ofString(String name)
-    {
+    public static SeekMode ofString(String name) {
       switch (name.toLowerCase(Locale.ENGLISH)) {
         case "earliest":
           return EARLIEST;
         case "timestamp":
           return TIMESTAMP;
+        case "offset":
+          return OFFSET;
         default:
       }
 
@@ -137,32 +146,31 @@ public class KafkaInputPlugin
     }
 
     public abstract void seek(KafkaConsumer<?, ?> consumer, List<TopicPartition> topicPartitions,
-        Optional<Long> timestamp);
+                              PluginTask task);
   }
 
   public enum TerminationMode {
     OFFSET_AT_START {
       @Override
-      public Map<TopicPartition, Long> getOffsetsForTermination(
+      public Map<String, Map<Integer, Long>> getOffsetsForTermination(
           KafkaConsumer<?, ?> consumer,
-          List<TopicPartition> topicPartitions)
-      {
-        return consumer.endOffsets(topicPartitions);
+          List<TopicPartition> topicPartitions) {
+        Map<String, Map<Integer, Long>> map = new HashMap<>();
+        consumer.endOffsets(topicPartitions).forEach(((topicPartition, offset) -> map.computeIfAbsent(topicPartition.topic(), k -> new HashMap<>()).put(topicPartition.partition(), offset)));
+        return map;
       }
     },
     ENDLESS {
       @Override
-      public Map<TopicPartition, Long> getOffsetsForTermination(
+      public Map<String, Map<Integer, Long>> getOffsetsForTermination(
           KafkaConsumer<?, ?> consumer,
-          List<TopicPartition> topicPartitions)
-      {
+          List<TopicPartition> topicPartitions) {
         return new HashMap<>();
       }
     };
 
     @JsonCreator
-    public static TerminationMode ofString(String name)
-    {
+    public static TerminationMode ofString(String name) {
       switch (name.toLowerCase(Locale.ENGLISH)) {
         case "offset_at_start":
           return OFFSET_AT_START;
@@ -176,14 +184,13 @@ public class KafkaInputPlugin
               name));
     }
 
-    public abstract Map<TopicPartition, Long> getOffsetsForTermination(
+    public abstract Map<String, Map<Integer, Long>> getOffsetsForTermination(
         KafkaConsumer<?, ?> consumer,
         List<TopicPartition> topicPartitions);
   }
 
   public interface PluginTask
-      extends Task
-  {
+      extends Task {
     @Config("brokers")
     List<String> getBrokers();
 
@@ -208,6 +215,10 @@ public class KafkaInputPlugin
     @Config("timestamp_for_seeking")
     @ConfigDefault("null")
     Optional<Long> getTimestampForSeeking();
+
+    @Config("offsets_for_seeking")
+    @ConfigDefault("null")
+    Optional<Map<String, Long>> getOffsetsForSeeking();
 
     @Config("key_column_name")
     @ConfigDefault("\"_key\"")
@@ -281,8 +292,7 @@ public class KafkaInputPlugin
 
   @Override
   public ConfigDiff transaction(ConfigSource config,
-      InputPlugin.Control control)
-  {
+                                InputPlugin.Control control) {
 
     final ConfigMapper configMapper = CONFIG_MAPPER_FACTORY.createConfigMapper();
     final PluginTask task = configMapper.map(config, PluginTask.class);
@@ -305,28 +315,23 @@ public class KafkaInputPlugin
   }
 
   private List<List<String>> buildAssignments(KafkaConsumer<?, ?> consumer, List<String> topics,
-      int maxTaskCount)
-  {
+                                              int maxTaskCount) {
     List<List<String>> assignments = IntStream.range(0, maxTaskCount)
         .mapToObj(n -> new ArrayList<String>()).collect(Collectors.toList());
     int taskIndex = 0;
     for (String topic : topics) {
       for (PartitionInfo partitionInfo : consumer.partitionsFor(topic)) {
         List<String> list = assignments.get(taskIndex);
-        if (list == null) {
-          list = new ArrayList<>();
-        }
         list.add(String.format("%s:%d", partitionInfo.topic(), partitionInfo.partition()));
         taskIndex += 1;
         taskIndex = taskIndex % maxTaskCount;
       }
     }
 
-    return assignments;
+    return assignments.stream().filter(list -> !list.isEmpty()).collect(Collectors.toList());
   }
 
-  private List<TopicPartition> buildTopicPartitions(List<List<String>> assignments, int taskIndex)
-  {
+  private List<TopicPartition> buildTopicPartitions(List<List<String>> assignments, int taskIndex) {
     List<TopicPartition> topicPartitions = new CopyOnWriteArrayList<>();
     assignments.get(taskIndex).forEach(assignmentInfo -> {
       String[] assignmentInfoArray = assignmentInfo.split(":");
@@ -340,25 +345,28 @@ public class KafkaInputPlugin
 
   @Override
   public ConfigDiff resume(TaskSource taskSource,
-      Schema schema, int taskCount,
-      InputPlugin.Control control)
-  {
-    control.run(taskSource, schema, taskCount);
-    return CONFIG_MAPPER_FACTORY.newConfigDiff();
+                           Schema schema, int taskCount,
+                           InputPlugin.Control control) {
+    List<TaskReport> taskReports = control.run(taskSource, schema, taskCount);
+
+    Map<String, Long> processedOffsets = new HashMap<>();
+    taskReports.forEach(taskReport -> taskReport.getAttributeNames().forEach(attr -> processedOffsets.put(attr, taskReport.get(Long.class, attr))));
+    ConfigDiff configDiff = CONFIG_MAPPER_FACTORY.newConfigDiff();
+    configDiff.set("seek_mode", "offset");
+    configDiff.set("offsets_for_seeking", processedOffsets);
+    return configDiff;
   }
 
   @Override
   public void cleanup(TaskSource taskSource,
-      Schema schema, int taskCount,
-      List<TaskReport> successTaskReports)
-  {
+                      Schema schema, int taskCount,
+                      List<TaskReport> successTaskReports) {
   }
 
   @Override
   public TaskReport run(TaskSource taskSource,
-      Schema schema, int taskIndex,
-      PageOutput output)
-  {
+                        Schema schema, int taskIndex,
+                        PageOutput output) {
 
     final TaskMapper taskMapper = CONFIG_MAPPER_FACTORY.createTaskMapper();
     final PluginTask task = taskMapper.map(taskSource, PluginTask.class);
@@ -371,26 +379,30 @@ public class KafkaInputPlugin
     props.put(ConsumerConfig.CLIENT_ID_CONFIG, baseId + "-" + taskIndex);
 
     List<TopicPartition> topicPartitions = buildTopicPartitions(task.getAssignments(), taskIndex);
+    Map<String, Map<Integer, Long>> processedOffsets;
     switch (task.getRecordSerializeFormat()) {
       case JSON:
         JsonInputProcess jsonInputProcess = new JsonInputProcess(task, schema, output, props,
             topicPartitions);
-        jsonInputProcess.run();
+        processedOffsets = jsonInputProcess.run();
         break;
       case AVRO_WITH_SCHEMA_REGISTRY:
         AvroInputProcess avroInputProcess = new AvroInputProcess(task, schema, output, props,
             topicPartitions);
-        avroInputProcess.run();
+        processedOffsets = avroInputProcess.run();
         break;
       default:
         throw new ConfigException("Unknown record_serialization_format");
     }
 
-    return CONFIG_MAPPER_FACTORY.newTaskReport();
+    TaskReport taskReport = CONFIG_MAPPER_FACTORY.newTaskReport();
+    processedOffsets.forEach((topic, partitionOffsets) ->
+        partitionOffsets.forEach((partition, offset) ->
+            taskReport.set(topic + ":" + partition, offset)));
+    return taskReport;
   }
 
-  abstract static class AbstractInputProcess<V>
-  {
+  abstract static class AbstractInputProcess<V> {
     protected final PluginTask task;
     private final Schema schema;
     private final PageOutput output;
@@ -399,9 +411,8 @@ public class KafkaInputPlugin
     protected final TimestampFormatter[] timestampFormatters;
 
     protected AbstractInputProcess(PluginTask task, Schema schema,
-        PageOutput output, Properties props,
-        List<TopicPartition> topicPartitions)
-    {
+                                   PageOutput output, Properties props,
+                                   List<TopicPartition> topicPartitions) {
       this.task = task;
       this.schema = schema;
       this.output = output;
@@ -414,15 +425,13 @@ public class KafkaInputPlugin
 
     public abstract AbstractKafkaInputColumnVisitor<V> getColumnVisitor(PageBuilder pageBuilder);
 
-    @SuppressWarnings("deprecation")
-    public void run()
-    {
+    public Map<String, Map<Integer, Long>> run() {
       try (KafkaConsumer<Bytes, V> consumer = getConsumer()) {
-        Map<TopicPartition, Long> offsetsForTermination = task
+        Map<String, Map<Integer, Long>> offsetsForTermination = task
             .getTerminationMode()
             .getOffsetsForTermination(consumer, topicPartitions);
 
-        assignAndSeek(task, topicPartitions, offsetsForTermination, consumer);
+        Map<String, Map<Integer, Long>> currentOffsets = assignAndSeek(task, topicPartitions, offsetsForTermination, consumer);
 
         BufferAllocator allocator = Exec.getBufferAllocator();
         // Use deprecated constructor for supporting embulk-0.9
@@ -456,10 +465,12 @@ public class KafkaInputPlugin
                 pageBuilder.addRecord();
               }
 
-              TopicPartition topicPartition = new TopicPartition(record.topic(),
-                  record.partition());
+              currentOffsets.get(record.topic()).put(record.partition(), record.offset() + 1);
+
               if (task.getTerminationMode() == TerminationMode.OFFSET_AT_START
-                  && record.offset() >= offsetsForTermination.get(topicPartition) - 1) {
+                  && record.offset() >= offsetsForTermination.get(record.topic()).get(record.partition()) - 1) {
+                TopicPartition topicPartition = new TopicPartition(record.topic(),
+                    record.partition());
                 reassign = true;
                 topicPartitions.remove(topicPartition);
               }
@@ -467,61 +478,71 @@ public class KafkaInputPlugin
           }
 
           pageBuilder.finish();
+
+          return currentOffsets;
         }
       }
     }
 
-    private void assignAndSeek(PluginTask task,
-        List<TopicPartition> topicPartitions, Map<TopicPartition, Long> offsetsForTermination,
-        KafkaConsumer<?, ?> consumer)
-    {
+    private Map<String, Map<Integer, Long>> assignAndSeek(PluginTask task,
+                                                          List<TopicPartition> topicPartitions, Map<String, Map<Integer, Long>> offsetsForTermination,
+                                                          KafkaConsumer<?, ?> consumer) {
       consumer.assign(topicPartitions);
 
-      task.getSeekMode().seek(consumer, topicPartitions, task.getTimestampForSeeking());
+      task.getSeekMode().seek(consumer, topicPartitions, task);
 
-      for (TopicPartition topicPartition : topicPartitions) {
+      Map<String, Map<Integer, Long>> currentOffsets = new HashMap<>();
+
+      topicPartitions.forEach(topicPartition -> {
         long position = consumer.position(topicPartition);
-        if (position >= offsetsForTermination.get(topicPartition)) {
-          topicPartitions.remove(topicPartition);
+        currentOffsets.computeIfAbsent(topicPartition.topic(), k -> new HashMap<>()).put(topicPartition.partition(), position);
+      });
+
+      if (task.getTerminationMode() == TerminationMode.OFFSET_AT_START) {
+        for (TopicPartition topicPartition : topicPartitions) {
+          long position = consumer.position(topicPartition);
+          offsetsForTermination.computeIfPresent(topicPartition.topic(), (k, v) -> {
+            Long offset = v.get(topicPartition.partition());
+            if (offset != null && position >= offset) {
+              topicPartitions.remove(topicPartition);
+            }
+
+            return v;
+          });
         }
       }
 
       consumer.assign(topicPartitions);
+
+      return currentOffsets;
     }
   }
 
-  static class JsonInputProcess extends AbstractInputProcess<ObjectNode>
-  {
+  static class JsonInputProcess extends AbstractInputProcess<ObjectNode> {
     JsonInputProcess(PluginTask task, Schema schema,
-        PageOutput output, Properties props,
-        List<TopicPartition> topicPartitions)
-    {
+                     PageOutput output, Properties props,
+                     List<TopicPartition> topicPartitions) {
       super(task, schema, output, props, topicPartitions);
     }
 
     @Override
-    public KafkaConsumer<Bytes, ObjectNode> getConsumer()
-    {
+    public KafkaConsumer<Bytes, ObjectNode> getConsumer() {
       return new KafkaConsumer<>(props, new BytesDeserializer(), new KafkaJsonDeserializer());
     }
 
     @Override
-    public AbstractKafkaInputColumnVisitor<ObjectNode> getColumnVisitor(PageBuilder pageBuilder)
-    {
+    public AbstractKafkaInputColumnVisitor<ObjectNode> getColumnVisitor(PageBuilder pageBuilder) {
       return new JsonFormatColumnVisitor(task, pageBuilder, timestampFormatters);
     }
   }
 
-  static class AvroInputProcess extends AbstractInputProcess<Object>
-  {
+  static class AvroInputProcess extends AbstractInputProcess<Object> {
     protected AvroInputProcess(PluginTask task, Schema schema, PageOutput output,
-        Properties props, List<TopicPartition> topicPartitions)
-    {
+                               Properties props, List<TopicPartition> topicPartitions) {
       super(task, schema, output, props, topicPartitions);
     }
 
-    private KafkaAvroDeserializer buildKafkaAvroDeserializer()
-    {
+    private KafkaAvroDeserializer buildKafkaAvroDeserializer() {
       KafkaAvroDeserializer kafkaAvroDeserializer = new KafkaAvroDeserializer();
 
       String schemaRegistryUrl = task.getSchemaRegistryUrl().orElseThrow(
@@ -540,28 +561,24 @@ public class KafkaInputPlugin
     }
 
     @Override
-    public KafkaConsumer<Bytes, Object> getConsumer()
-    {
+    public KafkaConsumer<Bytes, Object> getConsumer() {
       return new KafkaConsumer<>(props, new BytesDeserializer(), buildKafkaAvroDeserializer());
     }
 
     @Override
-    public AbstractKafkaInputColumnVisitor<Object> getColumnVisitor(PageBuilder pageBuilder)
-    {
+    public AbstractKafkaInputColumnVisitor<Object> getColumnVisitor(PageBuilder pageBuilder) {
       return new AvroFormatColumnVisitor(task, pageBuilder, timestampFormatters);
     }
   }
 
   @Override
-  public ConfigDiff guess(ConfigSource config)
-  {
+  public ConfigDiff guess(ConfigSource config) {
     return CONFIG_MAPPER_FACTORY.newConfigDiff();
   }
 
   private static TimestampFormatter[] newTimestampColumnFormatters(
       final PluginTask task,
-      final SchemaConfig schema)
-  {
+      final SchemaConfig schema) {
     final TimestampFormatter[] formatters = new TimestampFormatter[schema.getColumnCount()];
     int i = 0;
     for (final ColumnConfig column : schema.getColumns()) {

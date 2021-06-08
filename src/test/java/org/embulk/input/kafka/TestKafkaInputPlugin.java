@@ -1,6 +1,8 @@
 package org.embulk.input.kafka;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -28,14 +30,22 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+
+import org.apache.kafka.clients.admin.ListOffsetsResult;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.BytesSerializer;
 import org.apache.kafka.common.utils.Bytes;
+import org.embulk.config.ConfigDiff;
 import org.embulk.config.ConfigSource;
+import org.embulk.config.TaskReport;
 import org.embulk.formatter.csv.CsvFormatterPlugin;
 import org.embulk.output.file.LocalFileOutputPlugin;
 import org.embulk.spi.FileOutputPlugin;
@@ -49,6 +59,7 @@ import org.junit.Test;
 
 public class TestKafkaInputPlugin
 {
+  private static final String RESOURCE_PREFIX = "/";
 
   @Rule
   public final SharedKafkaTestResource sharedKafkaTestResource = new SharedKafkaTestResource()
@@ -69,11 +80,13 @@ public class TestKafkaInputPlugin
 
   private final List<String> topicNames = Arrays.asList("json-simple-topic", "json-complex-topic", "avro-simple-topic", "avro-complex-topic");
 
+  private final static int PARTITION_COUNT = 24;
+
   @Before
   public void setUp() {
     kafkaTestUtils = sharedKafkaTestResource.getKafkaTestUtils();
     topicNames.forEach(topic -> {
-      kafkaTestUtils.createTopic(topic, 48, (short) 1);
+      kafkaTestUtils.createTopic(topic, PARTITION_COUNT, (short) 1);
     });
   }
 
@@ -88,28 +101,33 @@ public class TestKafkaInputPlugin
         sharedKafkaTestResource.getKafkaBrokers().getBrokerById(1).getConnectString());
   }
 
-  @Test
-  public void testSimpleJson() throws IOException
-  {
+  private void insertJsonRecords(String topicName) {
     IntStream.rangeClosed(0, 7).forEach(i -> {
-      Map<byte[], byte[]> records = new HashMap<>();
-      IntStream.rangeClosed(0, 2).forEach(j -> {
-        String recordId = "ID-" + i + "-" + j;
-        SimpleRecord simpleRecord = new SimpleRecord(recordId, j, "varchar_" + j);
+      for (int count = 0; count <= 2; count++) {
+        Map<byte[], byte[]> records = new HashMap<>();
+        String recordId = "ID-" + i + "-" + count;
+        SimpleRecord simpleRecord = new SimpleRecord(recordId, count, "varchar_" + count);
         try {
           String value = objectMapper.writeValueAsString(simpleRecord);
           records.put(recordId.getBytes(), value.getBytes());
+          kafkaTestUtils.produceRecords(records, topicName, i);
         } catch (JsonProcessingException e) {
           throw new RuntimeException(e);
         }
-      });
-      kafkaTestUtils.produceRecords(records, "json-simple-topic", i);
+      }
     });
-    ConfigSource configSource = embulk.loadYamlResource("config_simple.yml");
+  }
+
+  @Test
+  public void testSimpleJson() throws IOException
+  {
+    String topicName = "json-simple-topic";
+    insertJsonRecords(topicName);
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_simple.yml");
     configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-simple-json");
     Path outputPath = outputDir.resolve("out.csv");
-    embulk.runInput(configSource, outputPath);
+    TestingEmbulk.RunResult runResult = embulk.runInput(configSource, outputPath);
     CsvMapper csvMapper = new CsvMapper();
     ObjectReader objectReader = csvMapper.readerWithTypedSchemaFor(SimpleRecord.class);
     MappingIterator<SimpleRecord> it = objectReader
@@ -122,6 +140,78 @@ public class TestKafkaInputPlugin
     SimpleRecord simpleRecord = outputs.stream().filter(r -> r.getId().equals("ID-0-1"))
         .findFirst().get();
     assertEquals(1, simpleRecord.getIntItem().intValue());
+
+    List<TaskReport> taskReports = runResult.getInputTaskReports();
+    ConfigDiff configDiff = runResult.getConfigDiff();
+
+    Map<String, Integer> processedOffsets = new HashMap<>();
+    taskReports.forEach(report -> report.getAttributeNames().forEach(attrName -> processedOffsets.put(attrName, report.get(Integer.class, attrName))));
+    Map<String, Integer> expectedOffsets = new HashMap<>();
+    IntStream.range(0, PARTITION_COUNT).forEach(i -> {
+      String key = topicName + ":" + i;
+      if (i <= 7) {
+        expectedOffsets.put(key, 3);
+      } else {
+        expectedOffsets.put(key, 0);
+      }
+    });
+
+    assertThat(processedOffsets).isEqualTo(expectedOffsets);
+    ListOffsetsResult result = sharedKafkaTestResource.getKafkaTestUtils().getAdminClient().listOffsets(Collections.singletonMap(new TopicPartition(topicName, 0), OffsetSpec.latest()));
+    assertThat(configDiff.getNested("in").get(String.class, "seek_mode")).isEqualTo("offset");
+    assertThat(configDiff.getNested("in").getNested("offsets_for_seeking").toMap()).isEqualTo(expectedOffsets);
+  }
+
+  @Test
+  public void testSimpleJsonWithOffsetsForSeeking() throws IOException
+  {
+    String topicName = "json-simple-topic";
+    insertJsonRecords(topicName);
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_simple.yml");
+    configSource.set("brokers", brokersConfig());
+    Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-simple-json");
+    Path outputPath = outputDir.resolve("out.csv");
+    configSource.set("seek_mode", "offset");
+    Map<String, Long> offsetsForSeeking = new HashMap<>();
+    offsetsForSeeking.put(topicName + ":" + 0, 2L);
+    offsetsForSeeking.put(topicName + ":" + 1, 3L);
+    configSource.set("offsets_for_seeking", offsetsForSeeking);
+    TestingEmbulk.RunResult runResult = embulk.runInput(configSource, outputPath);
+    CsvMapper csvMapper = new CsvMapper();
+    ObjectReader objectReader = csvMapper.readerWithTypedSchemaFor(SimpleRecord.class);
+    MappingIterator<SimpleRecord> it = objectReader
+        .readValues(outputPath.toFile());
+
+    List<SimpleRecord> outputs = new ArrayList<>();
+    it.forEachRemaining(outputs::add);
+
+    assertEquals(19, outputs.size());
+    assertFalse(outputs.stream().anyMatch(r -> r.getId().equals("ID-0-1")));
+    assertFalse(outputs.stream().anyMatch(r -> r.getId().equals("ID-1-0")));
+    assertFalse(outputs.stream().anyMatch(r -> r.getId().equals("ID-1-1")));
+    assertFalse(outputs.stream().anyMatch(r -> r.getId().equals("ID-1-2")));
+    SimpleRecord simpleRecord = outputs.stream().filter(r -> r.getId().equals("ID-0-2"))
+        .findFirst().get();
+    assertEquals(2, simpleRecord.getIntItem().intValue());
+
+    List<TaskReport> taskReports = runResult.getInputTaskReports();
+    ConfigDiff configDiff = runResult.getConfigDiff();
+
+    Map<String, Integer> processedOffsets = new HashMap<>();
+    taskReports.forEach(report -> report.getAttributeNames().forEach(attrName -> processedOffsets.put(attrName, report.get(Integer.class, attrName))));
+    Map<String, Integer> expectedOffsets = new HashMap<>();
+    IntStream.range(0, PARTITION_COUNT).forEach(i -> {
+      String key = topicName + ":" + i;
+      if (i <= 7) {
+        expectedOffsets.put(key, 3);
+      } else {
+        expectedOffsets.put(key, 0);
+      }
+    });
+
+    assertThat(processedOffsets).isEqualTo(expectedOffsets);
+    assertThat(configDiff.getNested("in").get(String.class, "seek_mode")).isEqualTo("offset");
+    assertThat(configDiff.getNested("in").getNested("offsets_for_seeking").toMap()).isEqualTo(expectedOffsets);
   }
 
   @Test
@@ -165,7 +255,7 @@ public class TestKafkaInputPlugin
       });
       kafkaTestUtils.produceRecords(records, "json-complex-topic", i);
     });
-    ConfigSource configSource = embulk.loadYamlResource("config_complex.yml");
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_complex.yml");
     configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-complex-json");
     Path outputPath = outputDir.resolve("out.csv");
@@ -205,21 +295,8 @@ public class TestKafkaInputPlugin
   @Test
   public void testSimpleJsonWithTimestampSeek() throws IOException
   {
-    IntStream.rangeClosed(0, 7).forEach(i -> {
-      Map<byte[], byte[]> records = new HashMap<>();
-      IntStream.rangeClosed(0, 2).forEach(j -> {
-        String recordId = "ID-" + i + "-" + j;
-        SimpleRecord simpleRecord = new SimpleRecord(recordId, j, "varchar_" + j);
-        try {
-          String value = objectMapper.writeValueAsString(simpleRecord);
-          records.put(recordId.getBytes(), value.getBytes());
-        } catch (JsonProcessingException e) {
-          throw new RuntimeException(e);
-        }
-      });
-      kafkaTestUtils.produceRecords(records, "json-simple-topic", i);
-    });
-    ConfigSource configSource = embulk.loadYamlResource("config_simple.yml");
+    insertJsonRecords("json-simple-topic");
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_simple.yml");
     configSource.set("brokers", brokersConfig());
     configSource.set("seek_mode", "timestamp");
     long now = Instant.now().toEpochMilli();
@@ -279,7 +356,7 @@ public class TestKafkaInputPlugin
       records.forEach(kafkaProducer::send);
       kafkaProducer.close();
     });
-    ConfigSource configSource = embulk.loadYamlResource("config_simple_avro.yml");
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_simple_avro.yml");
     configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-simple-avro");
     Path outputPath = outputDir.resolve("out.csv");
@@ -354,7 +431,7 @@ public class TestKafkaInputPlugin
       records.forEach(kafkaProducer::send);
       kafkaProducer.close();
     });
-    ConfigSource configSource = embulk.loadYamlResource("config_complex_avro.yml");
+    ConfigSource configSource = embulk.loadYamlResource(RESOURCE_PREFIX + "config_complex_avro.yml");
     configSource.set("brokers", brokersConfig());
     Path outputDir = Files.createTempDirectory("embulk-input-kafka-test-complex-avro");
     Path outputPath = outputDir.resolve("out.csv");
