@@ -6,7 +6,7 @@ version: 2
 jobs:
   build:
     docker:
-      - image: circleci/openjdk:8-jdk
+      - image: cimg/openjdk:8.0
 
     working_directory: ~/repo
 
@@ -39,7 +39,7 @@ jobs:
 
   embulk-0.9:
     docker:
-      - image: circleci/openjdk:8-jdk
+      - image: cimg/openjdk:8.0
       - image: wurstmeister/zookeeper
       - image: wurstmeister/kafka:2.13-2.7.0
         environment:
@@ -61,18 +61,18 @@ jobs:
 
       - restore_cache:
           keys:
-            - kafka-2.8.0
+            - kafka-2.8.2
 
       - run: |
-          if [ ! -d  kafka_2.12-2.8.0 ]; then curl -O -L https://downloads.apache.org/kafka/2.8.0/kafka_2.12-2.8.0.tgz && tar xvf kafka_2.12-2.8.0.tgz; fi
+          if [ ! -d  kafka_2.13-2.8.2 ]; then curl -O -L https://archive.apache.org/dist/kafka/2.8.2/kafka_2.13-2.8.2.tgz && tar xvf kafka_2.13-2.8.2.tgz; fi
 
       - save_cache:
           paths:
-            - ~/repo/kafka_2.12-2.8.0
-          key: kafka-2.8.0
+            - ~/repo/kafka_2.13-2.8.2
+          key: kafka-2.8.2
 
       - run: |
-          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.12-2.8.0/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
+          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.13-2.8.2/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
 
       - run: curl -o ./embulk -L https://github.com/embulk/embulk/releases/download/v0.9.23/embulk-0.9.23.jar
       - run: chmod +x ./embulk
@@ -98,9 +98,9 @@ jobs:
           command: ~/repo/embulk run -I ../../../build/gemContents/lib config_acceptance.yml
           working_directory: src/test/resources
 
-  embulk-0.10:
+  embulk-0.11:
     docker:
-      - image: circleci/openjdk:8-jdk
+      - image: cimg/openjdk:8.0
       - image: wurstmeister/zookeeper
       - image: wurstmeister/kafka:2.13-2.7.0
         environment:
@@ -123,20 +123,20 @@ jobs:
 
       - restore_cache:
           keys:
-            - kafka-2.8.0
+            - kafka-2.8.2
 
       - run: |
-          if [ ! -d  kafka_2.12-2.8.0 ]; then curl -O -L https://downloads.apache.org/kafka/2.8.0/kafka_2.12-2.8.0.tgz && tar xvf kafka_2.12-2.8.0.tgz; fi
+          if [ ! -d  kafka_2.13-2.8.2 ]; then curl -O -L https://archive.apache.org/dist/kafka/2.8.2/kafka_2.13-2.8.2.tgz && tar xvf kafka_2.13-2.8.2.tgz; fi
 
       - save_cache:
           paths:
-            - ~/repo/kafka_2.12-2.8.0
-          key: kafka-2.8.0
+            - ~/repo/kafka_2.13-2.8.2
+          key: kafka-2.8.2
 
       - run: |
-          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.12-2.8.0/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
+          echo 'key1|{"id": "key1", "int_item": 1, "varchar_item": "value1"}' | ./kafka_2.13-2.8.2/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic json-simple-topic --property "parse.key=true" --property "key.separator=|"
 
-      - run: curl -o ./embulk -L https://github.com/embulk/embulk/releases/download/v0.10.31/embulk-0.10.31.jar
+      - run: curl -o ./embulk -L https://github.com/embulk/embulk/releases/download/v0.11.0/embulk-0.11.0.jar
       - run: chmod +x ./embulk
 
       # Download and cache dependencies
@@ -181,4 +181,4 @@ workflows:
     jobs:
       - build
       - embulk-0.9
-      - embulk-0.10
+      - embulk-0.11
